@@ -1,11 +1,43 @@
-Binary Inspector
+# Binary Inspector
 
-A Windows binary inspection tool written in C using the Win32 API.
+A Windows PE Binary Inspector written in C using the Win32 API.
 
-Features:
-- File enumeration
-- Hex dump
-- Magic number detection
-- DOS header parsing
-- PE header parsing
-- RVA → File Offset conversion
+## Features
+
+- List files in the current directory
+- Display file information
+- Hex dump viewer
+- Jump to arbitrary file offsets
+- Detect binary type using magic numbers
+- Parse DOS Header
+- Parse PE Signature
+- Parse IMAGE_FILE_HEADER
+- Parse IMAGE_OPTIONAL_HEADER
+- Parse Section Headers
+- Convert RVA to File Offset
+
+## Build
+
+```bash
+gcc main.c -o main.c
+```
+
+## Example
+
+```
+=== DOS Header ===
+Magic: MZ
+e_lfanew: 0x80
+
+=== IMAGE_FILE_HEADER ===
+Machine: x86
+Sections: 13
+
+=== IMAGE_OPTIONAL_HEADER ===
+Entry Point: 0x12E0
+Image Base: 0x400000
+
+=== Section 1 ===
+Name: .text
+...
+```
