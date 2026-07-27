@@ -10,7 +10,6 @@ A Windows PE Binary Inspector written in C using the Win32 API.
 - Jump to arbitrary file offsets
 - Detect binary type using magic numbers
 - Parse DOS Header
-- Support PE32 and PE32+
 - Parse PE Signature
 - Parse IMAGE_FILE_HEADER
 - Parse IMAGE_OPTIONAL_HEADER
