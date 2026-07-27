@@ -7,6 +7,17 @@
 #define BYTES_PER_LINE 16
 #define MAX_SECTIONS 96
 
+typedef struct
+{
+    IMAGE_DOS_HEADER dosHeader;
+    IMAGE_FILE_HEADER fileHeader;
+    IMAGE_OPTIONAL_HEADER32 optionalHeader;
+    BOOL isPE64;
+    IMAGE_OPTIONAL_HEADER64 optional64;
+    IMAGE_SECTION_HEADER sections[MAX_SECTIONS];
+
+} PEFile;
+
 int ListFiles(char files[][MAX_PATH]);
 int ChooseFile(int count);
 void PrintFileInfo(const char *filename);
@@ -15,8 +26,15 @@ void HexDump(HANDLE hFile);
 BOOL JumpToOffset(HANDLE hFile);
 void DetectFileType(HANDLE hFile);
 void ParseDOSHeader(HANDLE hFile);
-void ParsePEHeader(HANDLE hFile);
-DWORD RvaToFileOffset(DWORD rva, IMAGE_SECTION_HEADER sections[], WORD numberOfSections);
+void ParsePE(HANDLE hFile);
+DWORD RvaToFileOffset(DWORD rva,const IMAGE_SECTION_HEADER sections[], WORD numberOfSections);
+BOOL SeekFile(HANDLE hFile, LONGLONG offset);
+BOOL ReadBytes(HANDLE hFile, void *buffer, DWORD size);
+BOOL ReadDOSHeader(HANDLE hFile, PEFile *pe);
+BOOL ReadPESignature(HANDLE hFile, BYTE signature[4], PEFile *pe);
+BOOL ReadFileHeader(HANDLE hFile, PEFile *pe);
+BOOL ReadOptionalHeader(HANDLE hFile, PEFile *pe);
+BOOL ReadSectionHeaders(HANDLE hFile, PEFile *pe);
 void ShowMenu(void);
 
 int ListFiles(char files[][MAX_PATH]) 
@@ -48,11 +66,12 @@ return count;
 }
 
 
-int ChooseFile(int count){
+int ChooseFile(int count)
+{
     int choice;
 
 while (1)
-{
+   {
     printf("Choose a file: ");
     scanf("%d", &choice);
 
@@ -60,16 +79,14 @@ while (1)
         return choice;
 
     printf("Invalid choice.\n");
-}
+   }
 }
 
 
 void PrintFileInfo(const char *filename){
     WIN32_FILE_ATTRIBUTE_DATA data;
 
-if (GetFileAttributesEx(filename,
-                        GetFileExInfoStandard,
-                        &data))
+if (GetFileAttributesEx(filename,GetFileExInfoStandard,&data))
 {
     LARGE_INTEGER size;
     size.LowPart = data.nFileSizeLow;
@@ -84,23 +101,36 @@ else
 }
 
 
-HANDLE OpenBinaryFile(const char *filename) {
-    HANDLE hFile = CreateFile(
-    filename,
-    GENERIC_READ,
-    FILE_SHARE_READ,
-    NULL,
-    OPEN_EXISTING,
-    FILE_ATTRIBUTE_NORMAL,
-    NULL
-    );
+HANDLE OpenBinaryFile(const char *filename) 
+{
+    HANDLE hFile = CreateFile(filename,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
 if (hFile == INVALID_HANDLE_VALUE)
 {
     printf("Couldn't open the file.\n");
     return INVALID_HANDLE_VALUE;}
     return hFile;
 
+}
+
+BOOL SeekFile(HANDLE hFile, LONGLONG offset)
+{
+    LARGE_INTEGER pos;
+    pos.QuadPart = offset;
+
+    return SetFilePointerEx(hFile,pos,NULL,FILE_BEGIN);
+}
+
+BOOL ReadBytes(HANDLE hFile,void *buffer,DWORD size)
+{
+    DWORD bytesRead;
+
+    if (!ReadFile(hFile,buffer,size,&bytesRead,NULL))
+    {
+        return FALSE;
     }
+
+    return bytesRead == size;
+}
 
 
 void HexDump(HANDLE hFile){
@@ -110,12 +140,7 @@ DWORD bytesRead;
 LARGE_INTEGER current;
 LARGE_INTEGER zero = {0};
 
-SetFilePointerEx(
-    hFile,
-    zero,
-    &current,
-    FILE_CURRENT
-);
+SetFilePointerEx(hFile,zero,&current,FILE_CURRENT);
 
 ULONGLONG offset = current.QuadPart;
 
@@ -157,31 +182,19 @@ BOOL JumpToOffset(HANDLE hFile){
 
 void DetectFileType(HANDLE hFile){
     BYTE signature[8];
-    DWORD bytesRead;
 
-    LARGE_INTEGER zero = {0};
-    if (!SetFilePointerEx(
-        hFile,
-        zero,
-        NULL,
-        FILE_BEGIN))
+    if (!SeekFile(hFile, 0))
     {
-        printf("Couldn't seek to beginning.\n");
+    printf("Couldn't seek to beginning.\n");
         return;
     }
-    if(!ReadFile(
-    hFile,
-    signature,
-    sizeof(signature),
-    &bytesRead,
-    NULL)){
-        printf("Couldn't read the file.\n");
+
+if (!ReadBytes(hFile,signature,sizeof(signature)))
+    {
+    printf("Couldn't read the file.\n");
     return;
     }
-     if (bytesRead < 2){
-        printf("File is too small.\n");
-        return;
-    }
+
 if(signature[0] == 0x4D && signature[1] == 0x5A){
     printf("Windows Portable Executable (EXE/DLL)\n");
 }
@@ -195,34 +208,18 @@ void ParseDOSHeader(HANDLE hFile){
     if(hFile == INVALID_HANDLE_VALUE) 
     return;
     IMAGE_DOS_HEADER dosHeader;
-    DWORD bytesRead;
-    LARGE_INTEGER zero = {0};
-    if(!SetFilePointerEx(
-    hFile,
-    zero,
-    NULL,
-    FILE_BEGIN))
-    {
-        printf("Failed to seek to file starts.\n");
-        return;
-    }
-    if(!ReadFile(
-    hFile,
-    &dosHeader,
-    sizeof(dosHeader),
-    &bytesRead,
-    NULL))
 
+if (!SeekFile(hFile, 0))
 {
-        printf("Failed to read DOS header.\n");
-        return;
-    }
+    printf("Couldn't seek.\n");
+    return;
+}
+if (!ReadBytes(hFile,&dosHeader,sizeof(dosHeader)))
+{
+    printf("Couldn't read DOS header.\n");
+    return;
+}
 
-    if (bytesRead != sizeof(dosHeader))
-    {
-        printf("Incomplete DOS header.\n");
-        return;
-    }
 
     if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
     {
@@ -241,9 +238,10 @@ void ParseDOSHeader(HANDLE hFile){
 
 }
 
+
 DWORD RvaToFileOffset(
     DWORD rva,
-    IMAGE_SECTION_HEADER sections[],
+    const IMAGE_SECTION_HEADER sections[],
     WORD numberOfSections)
 {
     for (WORD i = 0; i < numberOfSections; i++)
@@ -264,62 +262,133 @@ DWORD RvaToFileOffset(
     return 0;
 }
 
-void ParsePEHeader(HANDLE hFile){
-    IMAGE_DOS_HEADER dosHeader;
-    IMAGE_FILE_HEADER fileHeader;
-    IMAGE_OPTIONAL_HEADER32 optionalHeader;
-    IMAGE_SECTION_HEADER sections[MAX_SECTIONS];
 
-    DWORD bytesRead;
-    LARGE_INTEGER zero = {0};
-    
-    
-    if (!SetFilePointerEx(hFile, zero, NULL, FILE_BEGIN)) {
-        printf("Failed to seek to beginning.\n");
-        return;
+BOOL ReadDOSHeader(HANDLE hFile, PEFile *pe)
+{
+    if (!SeekFile(hFile, 0))
+        return FALSE;
+    if (!ReadBytes(hFile,&pe->dosHeader,sizeof(pe->dosHeader)))
+        return FALSE;
+    return pe->dosHeader.e_magic == IMAGE_DOS_SIGNATURE;
+}
+
+BOOL ReadPESignature(HANDLE hFile, BYTE signature[4], PEFile *pe)
+{
+    if (!SeekFile(hFile, pe->dosHeader.e_lfanew))
+        return FALSE;
+    return ReadBytes(hFile,signature,4);
+}
+
+BOOL ReadFileHeader(HANDLE hFile, PEFile *pe)
+{
+    return ReadBytes(hFile,&pe->fileHeader,sizeof(pe->fileHeader));
+}
+
+
+BOOL ReadOptionalHeader(HANDLE hFile, PEFile *pe)
+{
+    WORD magic;
+    if (!ReadBytes(hFile, &magic, sizeof(magic)))
+        return FALSE;
+    LARGE_INTEGER back;
+    back.QuadPart = -2;
+
+    SetFilePointerEx(hFile,back,NULL,FILE_CURRENT);
+
+    if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        pe->isPE64 = FALSE;
+        return ReadBytes(hFile,&pe->optionalHeader,sizeof(pe->optionalHeader));
     }
-    
-    
-    if (!ReadFile(hFile, &dosHeader, sizeof(dosHeader), &bytesRead, NULL)) {
-        printf("Failed to read DOS header.\n");
-        return;
+
+    if (magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        pe->isPE64 = TRUE;
+        return ReadBytes(hFile,&pe->optional64,sizeof(pe->optional64));
     }
-    
-    if (bytesRead != sizeof(dosHeader)) {
-        printf("Incomplete DOS header.\n");
-        return;
+    return FALSE;
+}
+
+
+BOOL ReadSectionHeaders(HANDLE hFile, PEFile *pe)
+{
+    if (pe->fileHeader.NumberOfSections > MAX_SECTIONS)
+  {
+    printf("Too many sections.\n");
+    return FALSE;
+  }
+    for (WORD i = 0;
+         i < pe->fileHeader.NumberOfSections;i++)
+    {
+        if (!ReadBytes(hFile,&pe->sections[i],sizeof(pe->sections[i])))
+        {
+            return FALSE;
+        }
     }
-    
-    
-    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE) {
-        printf("Not a valid PE executable.\n");
-        return;
-    }
-    
-    printf("\nDOS Header e_lfanew: 0x%X\n", dosHeader.e_lfanew);
-    
-    
-    LARGE_INTEGER peOffset;
-    peOffset.QuadPart = dosHeader.e_lfanew;
-    
-    
-    if (!SetFilePointerEx(hFile, peOffset, NULL, FILE_BEGIN)) {
-        printf("Failed to seek to PE header.\n");
-        return;
-    }
-    
-    
+    return TRUE;
+}
+
+
+DWORD GetEntryPoint(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.AddressOfEntryPoint
+        : pe->optionalHeader.AddressOfEntryPoint;
+}
+DWORD GetSubsystem(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.Subsystem
+        : pe->optionalHeader.Subsystem;
+}
+ULONGLONG GetImageBase(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.ImageBase
+        : pe->optionalHeader.ImageBase;
+}
+DWORD GetSectionAlignment(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.SectionAlignment
+        : pe->optionalHeader.SectionAlignment;
+}
+DWORD GetFileAlignment(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.FileAlignment
+        : pe->optionalHeader.FileAlignment;
+}
+DWORD GetSizeOfImage(const PEFile *pe)
+{
+    return pe->isPE64
+        ? pe->optional64.SizeOfImage
+        : pe->optionalHeader.SizeOfImage;  
+}
+
+
+
+void ParsePE(HANDLE hFile)
+{
+    PEFile pe;
     BYTE peSignature[4];
-    if (!ReadFile(hFile, peSignature, 4, &bytesRead, NULL)) {
-        printf("Failed to read PE signature.\n");
+
+    if (!ReadDOSHeader(hFile, &pe))
+    {
+        printf("Invalid DOS header.\n");
         return;
     }
-    
-    if (bytesRead != 4) {
-        printf("Incomplete PE signature read.\n");
+    if (!ReadPESignature(hFile, peSignature, &pe))
         return;
-    }
+    if (!ReadFileHeader(hFile, &pe))
+        return;
+    if (!ReadOptionalHeader(hFile, &pe))
+        return;
+    if (!ReadSectionHeaders(hFile, &pe))
+        return;
+
     
+    printf("\nDOS Header e_lfanew: 0x%X\n", pe.dosHeader.e_lfanew);
     
     printf("\nPE Signature (hex): ");
     for (int i = 0; i < 4; i++) {
@@ -327,136 +396,62 @@ void ParsePEHeader(HANDLE hFile){
     }
     printf("\n");
     
-    
     printf("PE Signature (chars): ");
     for (int i = 0; i < 4; i++) {
         printf("%c", (peSignature[i] >= 32 && peSignature[i] <= 126 ? peSignature[i] : '.'));
     }
     printf("\n");
-
    
-    if(!ReadFile(hFile, &fileHeader, sizeof(fileHeader), &bytesRead, NULL)){
-    printf("Failed to read IMAGE_FILE_HEADER\n");
-    return;
-       }
-     if (bytesRead != sizeof(fileHeader)){
-    printf("Incomplete IMAGE_FILE_HEADER\n");
-    }
+
     printf("\n=== IMAGE_FILE_HEADER ===\n");
-
-    printf("Machine: 0x%04X ", fileHeader.Machine);
-
-    switch (fileHeader.Machine){
-    case IMAGE_FILE_MACHINE_AMD64:
-        printf("(AMD64 / x64)");
-        break;
-
-    case IMAGE_FILE_MACHINE_I386:
-        printf("(I386 / x86)");
-        break;
-
-    default:
-        printf("(Unknown)");
-        break;
-    }
-
+    printf("Machine: 0x%04X\n", pe.fileHeader.Machine);
+   printf("Format: %s\n",
+       pe.isPE64 ? "PE32+" : "PE32");
     printf("\n");
-
     printf("Number of Sections: %u\n",
-       fileHeader.NumberOfSections);
-
+       pe.fileHeader.NumberOfSections);
     printf("TimeDateStamp: 0x%08X\n",
-       fileHeader.TimeDateStamp);
-
+       pe.fileHeader.TimeDateStamp);
     printf("Size of Optional Header: %u\n",
-       fileHeader.SizeOfOptionalHeader);
-
-
+       pe.fileHeader.SizeOfOptionalHeader);
     printf("Characteristics: 0x%04X\n",
-       fileHeader.Characteristics);
+       pe.fileHeader.Characteristics);
 
-
-    if(!ReadFile(hFile, &optionalHeader, sizeof(optionalHeader), &bytesRead, NULL))
-    {
- printf("Failed to read IMAGE_OPTIONAL_HEADER\n");
-    return;
-    }
-    if (bytesRead != sizeof(optionalHeader)){
-    printf("Incomplete IMAGE_OPTIONAL_HEADER\n");
-    }
 
     printf("\n=== IMAGE_OPTIONAL_HEADER ===\n");
-    printf("AddressOfEntryPoint : 0x%08X\n",
-       optionalHeader.AddressOfEntryPoint);
 
-    printf("ImageBase: 0x%016llX\n",
-       optionalHeader.ImageBase);
-
-    printf("Subsystem: 0x%04X ",
-       optionalHeader.Subsystem);
-
-    switch(optionalHeader.Subsystem){
-    case IMAGE_SUBSYSTEM_WINDOWS_GUI:
-        printf("(Windows GUI)\n");
-        break;
-
-    case IMAGE_SUBSYSTEM_WINDOWS_CUI:
-        printf("(Console)\n");
-        break;
-
-    default:
-        printf("(Unknown)\n");
-    } 
-
-    printf("Section Alignment: 0x%08X\n",
-       optionalHeader.SectionAlignment);
-
-    printf("File Alignment: 0x%08X\n",
-       optionalHeader.FileAlignment);
-
-    printf("Size of Image: 0x%08X\n",
-       optionalHeader.SizeOfImage);
+    printf("Image Base : 0x%llX\n",GetImageBase(&pe));
+    printf("Entry Point: 0x%X\n",GetEntryPoint(&pe));
+    printf("Subsystem  : %u\n",GetSubsystem(&pe));
+    printf("Section Alignment: 0x%08X\n",GetSectionAlignment(&pe));
+    printf("File Alignment: 0x%08X\n",GetFileAlignment(&pe));
+    printf("Size of Image: 0x%08X\n",GetSizeOfImage(&pe));
     
-
-
   
-    for (int i = 0; i < fileHeader.NumberOfSections; i++){
-    if(!ReadFile(hFile, &sections[i], sizeof(IMAGE_SECTION_HEADER), &bytesRead, NULL)){
-    printf("Failed to read IMAGE_SECTION_HEADER\n");
-    return; 
-    }
-    if (bytesRead != sizeof(sections[i]))
-   {
-    printf("Incomplete IMAGE_SECTION_HEADER\n");
-    return;
-    }
+  for (WORD i = 0;i < pe.fileHeader.NumberOfSections;i++)
+    {
      printf("\n=== Section %d ===\n", i + 1);
+     printf("Name: %.8s\n", pe.sections[i].Name);
+     printf("Virtual Address : 0x%08X\n",
+       pe.sections[i].VirtualAddress);
+     printf("Virtual Size    : 0x%08X\n",
+       pe.sections[i].Misc.VirtualSize);
+     printf("Raw Offset      : 0x%08X\n",
+       pe.sections[i].PointerToRawData);
+     printf("Raw Size        : 0x%08X\n",
+       pe.sections[i].SizeOfRawData);
+     printf("Characteristics : 0x%08X\n",
+       pe.sections[i].Characteristics);
+    }
 
-     printf("Name: %.8s\n", sections[i].Name);
 
-    printf("Virtual Address : 0x%08X\n",
-       sections[i].VirtualAddress);
+  DWORD entryPoint = GetEntryPoint(&pe);
+ 
+  DWORD fileOffset = RvaToFileOffset(entryPoint,pe.sections,pe.fileHeader.NumberOfSections);
 
-    printf("Virtual Size    : 0x%08X\n",
-       sections[i].Misc.VirtualSize);
+  printf("\nRVA: 0x%08X\n", entryPoint);
+  printf("Entry Point File Offset: 0x%08X\n", fileOffset);
 
-   printf("Raw Offset      : 0x%08X\n",
-       sections[i].PointerToRawData);
-
-   printf("Raw Size        : 0x%08X\n",
-       sections[i].SizeOfRawData);
-
-   printf("Characteristics : 0x%08X\n",
-       sections[i].Characteristics);
-  }
-
-DWORD fileOffset = RvaToFileOffset(
-    optionalHeader.AddressOfEntryPoint,
-    sections,
-    fileHeader.NumberOfSections
-);
-printf("\nRVA: 0x%08X\n", optionalHeader.AddressOfEntryPoint);
-printf("Entry Point File Offset: 0x%08X\n", fileOffset);
 }
 
 
@@ -508,21 +503,16 @@ case 2:
     ParseDOSHeader(hFile);
     break;
 case 3:
-    ParsePEHeader(hFile);
+    ParsePE(hFile);
     break;
 case 4:
-    {
-        LARGE_INTEGER zero = {0};
-
-    if (!SetFilePointerEx(
-        hFile,
-        zero,
-        NULL,
-        FILE_BEGIN))
+{
+    if (!SeekFile(hFile, 0))
     {
         printf("Couldn't seek.\n");
         break;
     }
+
     HexDump(hFile);
     break;
 }
